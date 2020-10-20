@@ -44,11 +44,6 @@
 #endif
 
 
-volatile int TxDone;
-volatile int RxDone;
-volatile int Error;
-
-
 class My_DMA
 {
 private:
@@ -59,8 +54,11 @@ public:
 	XAxiDma_Config *CfgPtr;
 	int Status;
 
-	int TxIntrId = TX_INTR_ID;
-	int RxIntrId = RX_INTR_ID;
+	volatile int tx_done, rx_done, error;
+
+	// These function pointers can be assigned from outside
+	void (*tx_done_callback)(My_DMA*);
+	void (*rx_done_callback)(My_DMA*);
 
 	My_DMA(uint16_t device_id):device_id(device_id){}
 
@@ -94,10 +92,13 @@ public:
 							XAXIDMA_DEVICE_TO_DMA);
 		XAxiDma_IntrDisable(&dma, XAXIDMA_IRQ_ALL_MASK,
 							XAXIDMA_DMA_TO_DEVICE);
+		tx_done = 0;
+		rx_done = 0;
+		error = 0;
 		return XST_SUCCESS;
 	}
 
-	int intr_init()
+	int intr_init(int TxIntrId, int RxIntrId)
 	{
 		#if defined XPAR_SCUGIC_SINGLE_DEVICE_ID || XPAR_INTC_0_DEVICE_ID
 			/* Initialize DMA engine */
@@ -132,13 +133,13 @@ public:
 					return XST_FAILURE;
 				}
 
-				Status = XIntc_Connect(&Intc, TxIntrId,	(XInterruptHandler) TxIntrHandler, &dma);
+				Status = XIntc_Connect(&Intc, TxIntrId,	(XInterruptHandler) TxIntrHandler, this);
 				if (Status != XST_SUCCESS) {
 					xil_printf("Failed tx connect intc\r\n");
 					return XST_FAILURE;
 				}
 
-				Status = XIntc_Connect(&Intc, RxIntrId, (XInterruptHandler) RxIntrHandler, &dma);
+				Status = XIntc_Connect(&Intc, RxIntrId, (XInterruptHandler) RxIntrHandler, this);
 				if (Status != XST_SUCCESS)
 				{
 					xil_printf("Failed rx connect intc\r\n");
@@ -182,13 +183,11 @@ public:
 				 * interrupt for the device occurs, the handler defined above performs
 				 * the specific interrupt processing for the device.
 				 */
-				Status = XScuGic_Connect(&Intc, TxIntrId, (Xil_InterruptHandler)TxIntrHandler, &dma);
+				Status = XScuGic_Connect(&Intc, TxIntrId, (Xil_InterruptHandler)TxIntrHandler, this);
 				if (Status != XST_SUCCESS)
 					return Status;
 
-				Status = XScuGic_Connect(&Intc, RxIntrId,
-							(Xil_InterruptHandler)RxIntrHandler,
-							&dma);
+				Status = XScuGic_Connect(&Intc, RxIntrId, (Xil_InterruptHandler)RxIntrHandler, this);
 				if (Status != XST_SUCCESS)
 					return Status;
 
@@ -217,10 +216,10 @@ public:
 			XAxiDma_IntrEnable(&dma, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DMA_TO_DEVICE);
 			XAxiDma_IntrEnable(&dma, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DEVICE_TO_DMA);
 
-			/* Initialize flags before start transfer test  */
-			TxDone = 0;
-			RxDone = 0;
-			Error = 0;
+			/* Initialize flags before start transfer  */
+			tx_done = 0;
+			rx_done = 0;
+			error = 0;
 
 			return XST_SUCCESS;
 		#else
@@ -232,13 +231,19 @@ public:
 	int from_mem(auto data_out_ptr, long length)
 	{
 		Xil_DCacheFlushRange((uintptr_t)data_out_ptr, length);
-		return XAxiDma_SimpleTransfer(&dma, (uintptr_t) data_out_ptr, length, XAXIDMA_DEVICE_TO_DMA);
+		rx_done = 0;
+		Status = XAxiDma_SimpleTransfer(&dma, (uintptr_t) data_out_ptr, length, XAXIDMA_DEVICE_TO_DMA);
+		rx_done = (Status == XST_SUCCESS);
+		return Status;
 	}
 
 	int to_mem(auto data_in_ptr, long length)
 	{
 		Xil_DCacheFlushRange((uintptr_t)data_in_ptr, length);
-		return XAxiDma_SimpleTransfer(&dma, (uintptr_t) data_in_ptr, length, XAXIDMA_DMA_TO_DEVICE);
+		tx_done = 0;
+		Status = XAxiDma_SimpleTransfer(&dma, (uintptr_t) data_in_ptr, length, XAXIDMA_DMA_TO_DEVICE);
+		tx_done = (Status == XST_SUCCESS);
+		return Status;
 	}
 
 	int is_busy(bool from_mem, bool to_mem)
@@ -370,11 +375,11 @@ public:
 			XTime_GetTime(&start_transfer);
 
 			// Wait for All done or Error
-			while (!TxDone && !RxDone && !Error) {}
+			while (!tx_done && !rx_done && !error) {}
 
-			if (Error)
+			if (error)
 			{
-				xil_printf("Failed test transmit%s done, receive%s done\r\n", TxDone? "":" not", RxDone? "":" not");
+				xil_printf("Failed test transmit%s done, receive%s done\r\n", tx_done? "":" not", rx_done? "":" not");
 				return XST_FAILURE;
 			}
 
@@ -419,7 +424,8 @@ public:
 	{
 		u32 IrqStatus;
 		int TimeOut;
-		XAxiDma *AxiDmaInst = (XAxiDma *)Callback;
+		My_DMA *my_dma_ptr = (My_DMA *)Callback;
+		XAxiDma *AxiDmaInst = &(my_dma_ptr->dma);
 
 		/* Read pending interrupts */
 		IrqStatus = XAxiDma_IntrGetIrq(AxiDmaInst, XAXIDMA_DMA_TO_DEVICE);
@@ -440,7 +446,7 @@ public:
 		 */
 		if ((IrqStatus & XAXIDMA_IRQ_ERROR_MASK)) {
 
-			Error = 1;
+			my_dma_ptr->error = 1;
 
 			/*
 			 * Reset should never fail for transmit channel
@@ -462,15 +468,18 @@ public:
 		/*
 		 * If Completion interrupt is asserted, then set the TxDone flag
 		 */
-		if ((IrqStatus & XAXIDMA_IRQ_IOC_MASK))
-			TxDone = 1;
+		if ((IrqStatus & XAXIDMA_IRQ_IOC_MASK)){
+			my_dma_ptr->tx_done_callback(my_dma_ptr);
+			my_dma_ptr->tx_done = 1;
+		}
 	}
 
 	static void RxIntrHandler(void *Callback)
 	{
 		u32 IrqStatus;
 		int TimeOut;
-		XAxiDma *AxiDmaInst = (XAxiDma *)Callback;
+		My_DMA *my_dma_ptr = (My_DMA *)Callback;
+		XAxiDma *AxiDmaInst = &(my_dma_ptr->dma);
 
 		/* Read pending interrupts */
 		IrqStatus = XAxiDma_IntrGetIrq(AxiDmaInst, XAXIDMA_DEVICE_TO_DMA);
@@ -491,7 +500,7 @@ public:
 		 */
 		if ((IrqStatus & XAXIDMA_IRQ_ERROR_MASK)) {
 
-			Error = 1;
+			my_dma_ptr->error = 1;
 
 			/* Reset could fail and hang
 			 * NEED a way to handle this or do not call it??
@@ -512,8 +521,10 @@ public:
 		/*
 		 * If completion interrupt is asserted, then set RxDone flag
 		 */
-		if (IrqStatus & XAXIDMA_IRQ_IOC_MASK)
-			RxDone = 1;
+		if (IrqStatus & XAXIDMA_IRQ_IOC_MASK){
+			my_dma_ptr->rx_done_callback(my_dma_ptr);
+			my_dma_ptr->rx_done = 1;
+		}
 	}
 #endif
 
