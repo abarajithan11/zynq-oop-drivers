@@ -46,8 +46,6 @@
 
 class My_DMA
 {
-private:
-
 public:
 	XAxiDma dma;
 	uint16_t device_id;
@@ -56,7 +54,7 @@ public:
 
 	volatile int tx_done, rx_done, error;
 
-	// These function pointers can be assigned from outside
+	// These function pointers are to be assigned from outside
 	void (*tx_done_callback)(My_DMA*);
 	void (*rx_done_callback)(My_DMA*);
 
@@ -98,9 +96,114 @@ public:
 		return XST_SUCCESS;
 	}
 
-	int intr_init(int TxIntrId, int RxIntrId)
+	int simple_rx(auto data_out_ptr, long length)
 	{
-		#if defined XPAR_SCUGIC_SINGLE_DEVICE_ID || XPAR_INTC_0_DEVICE_ID
+		Xil_DCacheFlushRange((uintptr_t)data_out_ptr, length);
+		rx_done = 0;
+		Status = XAxiDma_SimpleTransfer(&dma, (uintptr_t) data_out_ptr, length, XAXIDMA_DEVICE_TO_DMA);
+		rx_done = (Status == XST_SUCCESS);
+		return Status;
+	}
+
+	int simple_tx(auto data_in_ptr, long length)
+	{
+		Xil_DCacheFlushRange((uintptr_t)data_in_ptr, length);
+		tx_done = 0;
+		Status = XAxiDma_SimpleTransfer(&dma, (uintptr_t) data_in_ptr, length, XAXIDMA_DMA_TO_DEVICE);
+		tx_done = (Status == XST_SUCCESS);
+		return Status;
+	}
+
+	int is_busy(bool rx, bool tx)
+	{
+		return (rx && XAxiDma_Busy(&dma,XAXIDMA_DEVICE_TO_DMA)) || (tx && XAxiDma_Busy(&dma,XAXIDMA_DMA_TO_DEVICE));
+	}
+
+	void poll_wait(bool rx, bool tx)
+	{
+		while(is_busy(rx, tx)) {}
+	}
+
+	int poll_test(auto data_in_ptr, auto data_out_ptr, long length, int num_transfers)
+	{
+		/* DMA successfully pulls 2^26-1 bytes = 64 MB
+		 * 26 = maximum register size
+		 *
+		 	#define TX_BUFFER_BASE		0x01000000  // = XPAR_PS7_DDR_0_S_AXI_BASEADDR
+			#define RX_BUFFER_BASE		0x05000000  // = TX_BUFFER_BASE + (2^26)
+			#define RX_BUFFER_HIGH		0x3FFFFFFF  // = XPAR_PS7_DDR_0_S_AXI_HIGHADDR
+
+			#define MAX_PKT_LEN		    67108863    // = 2^26-1
+			#define TEST_START_VALUE	0xC
+			#define NUMBER_OF_TRANSFERS	10
+		 *
+		 **/
+		Test_Data test_data ((u8 *)data_in_ptr, (u8 *)data_out_ptr, 0, length);
+
+		XTime start_loop, end_loop, start_transfer, end_transfer;
+		XTime sum_transfer_clocks = 0;
+		XTime loop_transfer_time = 0;
+
+		XTime_GetTime(&start_loop);
+		for(int i = 0; i < num_transfers; i ++)
+		{
+
+			Status = this->simple_rx((UINTPTR) data_out_ptr, length);
+			if (Status != XST_SUCCESS)
+			{
+				xil_printf("Failed to initiate rx with code: %d\r\n", Status);
+				return XST_FAILURE;
+			}
+
+			Status = this->simple_tx((UINTPTR) data_in_ptr, length);
+			if (Status != XST_SUCCESS)
+			{
+				xil_printf("Failed to initiate tx with code: %d\r\n", Status);
+				return XST_FAILURE;
+			}
+
+			xil_printf("%d : Started Transfer\r\n", i);
+			XTime_GetTime(&start_transfer);
+
+			this->poll_wait(true,true);
+
+			XTime_GetTime(&end_transfer);
+			sum_transfer_clocks += (end_transfer-start_transfer);
+			xil_printf("%d : Finished Transfer\r\n", i);
+
+			Status = test_data.check();
+			if (Status != XST_SUCCESS)
+			{
+				xil_printf("Check data failed\r\n");
+				return XST_FAILURE;
+			}
+
+			xil_printf("%d : Validated Transfer\r\n\n", i);
+
+		}
+		XTime_GetTime(&end_loop);
+
+		loop_transfer_time = (end_loop-start_loop)/COUNTS_PER_SECOND;
+		u64 bandwidth = length * num_transfers * COUNTS_PER_SECOND /(end_loop-start_loop);
+
+		xil_printf("Time for %d setups and transfers: %d seconds\r\n",num_transfers, loop_transfer_time);
+		xil_printf("Avg time for each setup and transfer: %d seconds\r\n", loop_transfer_time/num_transfers);
+		xil_printf("Avg bandwidth (incl setup): %d bytes/sec\r\n\n", bandwidth);
+
+		long sum_transfer_time = sum_transfer_clocks/COUNTS_PER_SECOND;
+		bandwidth = length * num_transfers * COUNTS_PER_SECOND /sum_transfer_clocks;
+
+		xil_printf("Time for %d transfers: %d seconds\r\n",num_transfers, sum_transfer_time);
+		xil_printf("Avg time for each transfer: %d seconds\r\n", sum_transfer_time/num_transfers);
+		xil_printf("Avg bandwidth (transfer only): %d bytes/sec\r\n\n", bandwidth);
+
+
+		return XST_SUCCESS;
+	}
+
+	#if defined XPAR_SCUGIC_SINGLE_DEVICE_ID || XPAR_INTC_0_DEVICE_ID
+		int intr_init(int TxIntrId, int RxIntrId)
+		{
 			/* Initialize DMA engine */
 			CfgPtr = XAxiDma_LookupConfig(device_id);
 			if (!CfgPtr)
@@ -222,203 +325,98 @@ public:
 			error = 0;
 
 			return XST_SUCCESS;
-		#else
-			xil_printf("Interrupts are not available. Cannot initiate in interrupt mode.  \r\n");
-			return XST_FAILURE;
-		#endif
-	}
-
-	int from_mem(auto data_out_ptr, long length)
-	{
-		Xil_DCacheFlushRange((uintptr_t)data_out_ptr, length);
-		rx_done = 0;
-		Status = XAxiDma_SimpleTransfer(&dma, (uintptr_t) data_out_ptr, length, XAXIDMA_DEVICE_TO_DMA);
-		rx_done = (Status == XST_SUCCESS);
-		return Status;
-	}
-
-	int to_mem(auto data_in_ptr, long length)
-	{
-		Xil_DCacheFlushRange((uintptr_t)data_in_ptr, length);
-		tx_done = 0;
-		Status = XAxiDma_SimpleTransfer(&dma, (uintptr_t) data_in_ptr, length, XAXIDMA_DMA_TO_DEVICE);
-		tx_done = (Status == XST_SUCCESS);
-		return Status;
-	}
-
-	int is_busy(bool from_mem, bool to_mem)
-	{
-		return (from_mem && XAxiDma_Busy(&dma,XAXIDMA_DEVICE_TO_DMA)) || (to_mem && XAxiDma_Busy(&dma,XAXIDMA_DMA_TO_DEVICE));
-	}
-
-	void poll_wait(bool from_mem, bool to_mem)
-	{
-		while(is_busy(from_mem, to_mem)) {}
-	}
-
-	int poll_test(auto data_in_ptr, auto data_out_ptr, long length, int num_transfers)
-	{
-		/* DMA successfully pulls 2^26-1 bytes = 64 MB
-		 * 26 = maximum register size
-		 *
-		 	#define TX_BUFFER_BASE		0x01000000  // = XPAR_PS7_DDR_0_S_AXI_BASEADDR
-			#define RX_BUFFER_BASE		0x05000000  // = TX_BUFFER_BASE + (2^26)
-			#define RX_BUFFER_HIGH		0x3FFFFFFF  // = XPAR_PS7_DDR_0_S_AXI_HIGHADDR
-
-			#define MAX_PKT_LEN		    67108863    // = 2^26-1
-			#define TEST_START_VALUE	0xC
-			#define NUMBER_OF_TRANSFERS	10
-		 *
-		 **/
-		Test_Data test_data ((u8 *)data_in_ptr, (u8 *)data_out_ptr, 0, length);
-
-		XTime start_loop, end_loop, start_transfer, end_transfer;
-		XTime sum_transfer_clocks = 0;
-		XTime loop_transfer_time = 0;
-
-		XTime_GetTime(&start_loop);
-		for(int i = 0; i < num_transfers; i ++)
-		{
-
-			Status = this->from_mem((UINTPTR) data_out_ptr, length);
-			if (Status != XST_SUCCESS)
-			{
-				xil_printf("Failed to initiate from_mem with code: %d\r\n", Status);
-				return XST_FAILURE;
-			}
-
-			Status = this->to_mem((UINTPTR) data_in_ptr, length);
-			if (Status != XST_SUCCESS)
-			{
-				xil_printf("Failed to initiate to_mem with code: %d\r\n", Status);
-				return XST_FAILURE;
-			}
-
-			xil_printf("%d : Started Transfer\r\n", i);
-			XTime_GetTime(&start_transfer);
-
-			this->poll_wait(true,true);
-
-			XTime_GetTime(&end_transfer);
-			sum_transfer_clocks += (end_transfer-start_transfer);
-			xil_printf("%d : Finished Transfer\r\n", i);
-
-			Status = test_data.check();
-			if (Status != XST_SUCCESS)
-			{
-				xil_printf("Check data failed\r\n");
-				return XST_FAILURE;
-			}
-
-			xil_printf("%d : Validated Transfer\r\n\n", i);
-
 		}
-		XTime_GetTime(&end_loop);
 
-		loop_transfer_time = (end_loop-start_loop)/COUNTS_PER_SECOND;
-		u64 bandwidth = length * num_transfers * COUNTS_PER_SECOND /(end_loop-start_loop);
-
-		xil_printf("Time for %d setups and transfers: %d seconds\r\n",num_transfers, loop_transfer_time);
-		xil_printf("Avg time for each setup and transfer: %d seconds\r\n", loop_transfer_time/num_transfers);
-		xil_printf("Avg bandwidth (incl setup): %d bytes/sec\r\n\n", bandwidth);
-
-		long sum_transfer_time = sum_transfer_clocks/COUNTS_PER_SECOND;
-		bandwidth = length * num_transfers * COUNTS_PER_SECOND /sum_transfer_clocks;
-
-		xil_printf("Time for %d transfers: %d seconds\r\n",num_transfers, sum_transfer_time);
-		xil_printf("Avg time for each transfer: %d seconds\r\n", sum_transfer_time/num_transfers);
-		xil_printf("Avg bandwidth (transfer only): %d bytes/sec\r\n\n", bandwidth);
-
-
-		return XST_SUCCESS;
-	}
-
-	int intr_test(auto data_in_ptr, auto data_out_ptr, long length, int num_transfers)
-	{
-		/* DMA successfully pulls 2^26-1 bytes = 64 MB
-		 * 26 = maximum register size
-		 *
-			#define TX_BUFFER_BASE		0x01000000  // = XPAR_PS7_DDR_0_S_AXI_BASEADDR
-			#define RX_BUFFER_BASE		0x05000000  // = TX_BUFFER_BASE + (2^26)
-			#define RX_BUFFER_HIGH		0x3FFFFFFF  // = XPAR_PS7_DDR_0_S_AXI_HIGHADDR
-
-			#define MAX_PKT_LEN		    67108863    // = 2^26-1
-			#define TEST_START_VALUE	0xC
-			#define NUMBER_OF_TRANSFERS	10
-		 *
-		 **/
-		Test_Data test_data ((u8 *)data_in_ptr, (u8 *)data_out_ptr, 0, length);
-
-		XTime start_loop, end_loop, start_transfer, end_transfer;
-		XTime sum_transfer_clocks = 0;
-		XTime loop_transfer_time = 0;
-
-		XTime_GetTime(&start_loop);
-		for(int i = 0; i < num_transfers; i ++)
+		int intr_test(auto data_in_ptr, auto data_out_ptr, long length, int num_transfers)
 		{
+			/* DMA successfully pulls 2^26-1 bytes = 64 MB
+			 * 26 = maximum register size
+			 *
+				#define TX_BUFFER_BASE		0x01000000  // = XPAR_PS7_DDR_0_S_AXI_BASEADDR
+				#define RX_BUFFER_BASE		0x05000000  // = TX_BUFFER_BASE + (2^26)
+				#define RX_BUFFER_HIGH		0x3FFFFFFF  // = XPAR_PS7_DDR_0_S_AXI_HIGHADDR
 
-			Status = this->from_mem((UINTPTR) data_out_ptr, length);
-			if (Status != XST_SUCCESS)
+				#define MAX_PKT_LEN		    67108863    // = 2^26-1
+				#define TEST_START_VALUE	0xC
+				#define NUMBER_OF_TRANSFERS	10
+			 *
+			 **/
+			Test_Data test_data ((u8 *)data_in_ptr, (u8 *)data_out_ptr, 0, length);
+
+			XTime start_loop, end_loop, start_transfer, end_transfer;
+			XTime sum_transfer_clocks = 0;
+			XTime loop_transfer_time = 0;
+
+			XTime_GetTime(&start_loop);
+			for(int i = 0; i < num_transfers; i ++)
 			{
-				xil_printf("Failed to initiate from_mem with code: %d\r\n", Status);
-				return XST_FAILURE;
+
+				Status = this->simple_rx((UINTPTR) data_out_ptr, length);
+				if (Status != XST_SUCCESS)
+				{
+					xil_printf("Failed to initiate rx with code: %d\r\n", Status);
+					return XST_FAILURE;
+				}
+
+				Status = this->simple_tx((UINTPTR) data_in_ptr, length);
+				if (Status != XST_SUCCESS)
+				{
+					xil_printf("Failed to initiate tx with code: %d\r\n", Status);
+					return XST_FAILURE;
+				}
+
+				xil_printf("%d : Started Transfer\r\n", i);
+				XTime_GetTime(&start_transfer);
+
+				// Wait for All done or Error
+				while (!tx_done && !rx_done && !error) {}
+
+				if (error)
+				{
+					xil_printf("Failed test transmit%s done, receive%s done\r\n", tx_done? "":" not", rx_done? "":" not");
+					return XST_FAILURE;
+				}
+
+				XTime_GetTime(&end_transfer);
+				sum_transfer_clocks += (end_transfer-start_transfer);
+				xil_printf("%d : Finished Transfer\r\n", i);
+
+				Status = test_data.check();
+				if (Status != XST_SUCCESS)
+				{
+					xil_printf("Check data failed\r\n");
+					return XST_FAILURE;
+				}
+
+				xil_printf("%d : Validated Transfer\r\n\n", i);
+
 			}
+			XTime_GetTime(&end_loop);
 
-			Status = this->to_mem((UINTPTR) data_in_ptr, length);
-			if (Status != XST_SUCCESS)
-			{
-				xil_printf("Failed to initiate to_mem with code: %d\r\n", Status);
-				return XST_FAILURE;
-			}
+			loop_transfer_time = (end_loop-start_loop)/COUNTS_PER_SECOND;
+			u64 bandwidth = length * num_transfers * COUNTS_PER_SECOND /(end_loop-start_loop);
 
-			xil_printf("%d : Started Transfer\r\n", i);
-			XTime_GetTime(&start_transfer);
+			xil_printf("Time for %d setups and transfers: %d seconds\r\n",num_transfers, loop_transfer_time);
+			xil_printf("Avg time for each setup and transfer: %d seconds\r\n", loop_transfer_time/num_transfers);
+			xil_printf("Avg bandwidth (incl setup): %d bytes/sec\r\n\n", bandwidth);
 
-			// Wait for All done or Error
-			while (!tx_done && !rx_done && !error) {}
+			long sum_transfer_time = sum_transfer_clocks/COUNTS_PER_SECOND;
+			bandwidth = length * num_transfers * COUNTS_PER_SECOND /sum_transfer_clocks;
 
-			if (error)
-			{
-				xil_printf("Failed test transmit%s done, receive%s done\r\n", tx_done? "":" not", rx_done? "":" not");
-				return XST_FAILURE;
-			}
+			xil_printf("Time for %d transfers: %d seconds\r\n",num_transfers, sum_transfer_time);
+			xil_printf("Avg time for each transfer: %d seconds\r\n", sum_transfer_time/num_transfers);
+			xil_printf("Avg bandwidth (transfer only): %d bytes/sec\r\n\n", bandwidth);
 
-			XTime_GetTime(&end_transfer);
-			sum_transfer_clocks += (end_transfer-start_transfer);
-			xil_printf("%d : Finished Transfer\r\n", i);
 
-			Status = test_data.check();
-			if (Status != XST_SUCCESS)
-			{
-				xil_printf("Check data failed\r\n");
-				return XST_FAILURE;
-			}
-
-			xil_printf("%d : Validated Transfer\r\n\n", i);
-
+			return XST_SUCCESS;
 		}
-		XTime_GetTime(&end_loop);
-
-		loop_transfer_time = (end_loop-start_loop)/COUNTS_PER_SECOND;
-		u64 bandwidth = length * num_transfers * COUNTS_PER_SECOND /(end_loop-start_loop);
-
-		xil_printf("Time for %d setups and transfers: %d seconds\r\n",num_transfers, loop_transfer_time);
-		xil_printf("Avg time for each setup and transfer: %d seconds\r\n", loop_transfer_time/num_transfers);
-		xil_printf("Avg bandwidth (incl setup): %d bytes/sec\r\n\n", bandwidth);
-
-		long sum_transfer_time = sum_transfer_clocks/COUNTS_PER_SECOND;
-		bandwidth = length * num_transfers * COUNTS_PER_SECOND /sum_transfer_clocks;
-
-		xil_printf("Time for %d transfers: %d seconds\r\n",num_transfers, sum_transfer_time);
-		xil_printf("Avg time for each transfer: %d seconds\r\n", sum_transfer_time/num_transfers);
-		xil_printf("Avg bandwidth (transfer only): %d bytes/sec\r\n\n", bandwidth);
-
-
-		return XST_SUCCESS;
-	}
-
+	#endif
 };
 
+/* Interrupt handlers
+ *
+ * They verify the interrupts, check for errors and call the custom-defined handler
+ * */
 #if defined XPAR_SCUGIC_SINGLE_DEVICE_ID || XPAR_INTC_0_DEVICE_ID
 	static void TxIntrHandler(void *Callback)
 	{
