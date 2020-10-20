@@ -18,47 +18,35 @@
 #include "xaxidma.h"
 #include "test_data.h"
 
-#ifdef XPAR_INTC_0_DEVICE_ID
- #include "xintc.h"
-#else
- #include "xscugic.h"
+
+#if defined XPAR_SCUGIC_SINGLE_DEVICE_ID || XPAR_INTC_0_DEVICE_ID
+	#ifdef XPAR_INTC_0_DEVICE_ID
+		#include "xintc.h"
+		#define INTC_DEVICE_ID  XPAR_INTC_0_DEVICE_ID
+		#define RX_INTR_ID		XPAR_INTC_0_AXIDMA_0_S2MM_INTROUT_VEC_ID
+		#define TX_INTR_ID		XPAR_INTC_0_AXIDMA_0_MM2S_INTROUT_VEC_ID
+		#define INTC		    XIntc
+		#define INTC_HANDLER	XIntc_InterruptHandler
+	#endif
+	#ifdef XPAR_SCUGIC_SINGLE_DEVICE_ID
+		#include "xscugic.h"
+		#define INTC_DEVICE_ID  XPAR_SCUGIC_SINGLE_DEVICE_ID
+		#define RX_INTR_ID		XPAR_FABRIC_AXIDMA_0_S2MM_INTROUT_VEC_ID
+		#define TX_INTR_ID		XPAR_FABRIC_AXIDMA_0_MM2S_INTROUT_VEC_ID
+		#define INTC		    XScuGic
+		#define INTC_HANDLER	XScuGic_InterruptHandler
+	#endif
+
+	#define RESET_TIMEOUT_COUNTER	10000
+	static INTC Intc;
+	static void TxIntrHandler(void *Callback);
+	static void RxIntrHandler(void *Callback);
 #endif
 
-#ifdef XPAR_INTC_0_DEVICE_ID
-#define RX_INTR_ID		XPAR_INTC_0_AXIDMA_0_S2MM_INTROUT_VEC_ID
-#define TX_INTR_ID		XPAR_INTC_0_AXIDMA_0_MM2S_INTROUT_VEC_ID
-#else
-#define RX_INTR_ID		XPAR_FABRIC_AXIDMA_0_S2MM_INTROUT_VEC_ID
-#define TX_INTR_ID		XPAR_FABRIC_AXIDMA_0_MM2S_INTROUT_VEC_ID
-#endif
 
-#ifdef XPAR_INTC_0_DEVICE_ID
-#define INTC_DEVICE_ID          XPAR_INTC_0_DEVICE_ID
-#else
-#define INTC_DEVICE_ID          XPAR_SCUGIC_SINGLE_DEVICE_ID
-#endif
-
-#ifdef XPAR_INTC_0_DEVICE_ID
- #define INTC		XIntc
- #define INTC_HANDLER	XIntc_InterruptHandler
-#else
- #define INTC		XScuGic
- #define INTC_HANDLER	XScuGic_InterruptHandler
-#endif
-
-static INTC Intc;
 volatile int TxDone;
 volatile int RxDone;
 volatile int Error;
-
-static void TxIntrHandler(void *Callback);
-static void RxIntrHandler(void *Callback);
-static int SetupIntrSystem(INTC * IntcInstancePtr,
-			   XAxiDma * AxiDmaPtr, u16 TxIntrId, u16 RxIntrId);
-static void DisableIntrSystem(INTC * IntcInstancePtr,
-					u16 TxIntrId, u16 RxIntrId);
-
-#define RESET_TIMEOUT_COUNTER	10000
 
 
 class My_DMA
@@ -71,10 +59,13 @@ public:
 	XAxiDma_Config *CfgPtr;
 	int Status;
 
+	int TxIntrId = TX_INTR_ID;
+	int RxIntrId = RX_INTR_ID;
+
 	My_DMA(uint16_t device_id):device_id(device_id){}
 
 	int poll_init()
-		{
+	{
 		/* Initialize DMA in polling mode
 		 */
 		CfgPtr = XAxiDma_LookupConfig(device_id);
@@ -106,58 +97,136 @@ public:
 		return XST_SUCCESS;
 	}
 
-	int intr_init() {
-		/* Initialize DMA engine */
-		CfgPtr = XAxiDma_LookupConfig(device_id);
-		if (!CfgPtr)
-		{
-			xil_printf("No config found for %d\r\n", device_id);
+	int intr_init()
+	{
+		#if defined XPAR_SCUGIC_SINGLE_DEVICE_ID || XPAR_INTC_0_DEVICE_ID
+			/* Initialize DMA engine */
+			CfgPtr = XAxiDma_LookupConfig(device_id);
+			if (!CfgPtr)
+			{
+				xil_printf("No config found for %d\r\n", device_id);
+				return XST_FAILURE;
+			}
+			Status = XAxiDma_CfgInitialize(&dma, CfgPtr);
+
+			if (Status != XST_SUCCESS)
+			{
+				xil_printf("Initialization failed %d\r\n", Status);
+				return XST_FAILURE;
+			}
+
+			if(XAxiDma_HasSg(&dma))
+			{
+				xil_printf("Device configured as SG mode \r\n");
+				return XST_FAILURE;
+			}
+
+			/* Set up Interrupt system  */
+
+			#ifdef XPAR_INTC_0_DEVICE_ID
+
+				/* Initialize the interrupt controller and connect the ISRs */
+				Status = XIntc_Initialize(&Intc, INTC_DEVICE_ID);
+				if (Status != XST_SUCCESS) {
+					xil_printf("Failed init intc\r\n");
+					return XST_FAILURE;
+				}
+
+				Status = XIntc_Connect(&Intc, TxIntrId,	(XInterruptHandler) TxIntrHandler, &dma);
+				if (Status != XST_SUCCESS) {
+					xil_printf("Failed tx connect intc\r\n");
+					return XST_FAILURE;
+				}
+
+				Status = XIntc_Connect(&Intc, RxIntrId, (XInterruptHandler) RxIntrHandler, &dma);
+				if (Status != XST_SUCCESS)
+				{
+					xil_printf("Failed rx connect intc\r\n");
+					return XST_FAILURE;
+				}
+
+				/* Start the interrupt controller */
+				Status = XIntc_Start(&Intc, XIN_REAL_MODE);
+				if (Status != XST_SUCCESS)
+				{
+					xil_printf("Failed to start intc\r\n");
+					return XST_FAILURE;
+				}
+
+				XIntc_Enable(&Intc, TxIntrId);
+				XIntc_Enable(&Intc, RxIntrId);
+
+			#else
+
+				XScuGic_Config *IntcConfig;
+
+				/*
+				 * Initialize the interrupt controller driver so that it is ready to
+				 * use.
+				 */
+				IntcConfig = XScuGic_LookupConfig(INTC_DEVICE_ID);
+				if (NULL == IntcConfig)
+					return XST_FAILURE;
+
+				Status = XScuGic_CfgInitialize(&Intc, IntcConfig,
+								IntcConfig->CpuBaseAddress);
+				if (Status != XST_SUCCESS)
+					return XST_FAILURE;
+
+
+				XScuGic_SetPriorityTriggerType(&Intc, TxIntrId, 0xA0, 0x3);
+
+				XScuGic_SetPriorityTriggerType(&Intc, RxIntrId, 0xA0, 0x3);
+				/*
+				 * Connect the device driver handler that will be called when an
+				 * interrupt for the device occurs, the handler defined above performs
+				 * the specific interrupt processing for the device.
+				 */
+				Status = XScuGic_Connect(&Intc, TxIntrId, (Xil_InterruptHandler)TxIntrHandler, &dma);
+				if (Status != XST_SUCCESS)
+					return Status;
+
+				Status = XScuGic_Connect(&Intc, RxIntrId,
+							(Xil_InterruptHandler)RxIntrHandler,
+							&dma);
+				if (Status != XST_SUCCESS)
+					return Status;
+
+				XScuGic_Enable(&Intc, TxIntrId);
+				XScuGic_Enable(&Intc, RxIntrId);
+
+			#endif
+
+				/* Enable interrupts from the hardware */
+
+				Xil_ExceptionInit();
+				Xil_ExceptionRegisterHandler(XIL_EXCEPTION_ID_INT, (Xil_ExceptionHandler)INTC_HANDLER, (void *)&Intc);
+				Xil_ExceptionEnable();
+
+			if (Status != XST_SUCCESS)
+			{
+				xil_printf("Failed intr setup\r\n");
+				return XST_FAILURE;
+			}
+
+			/* Disable all interrupts before setup */
+			XAxiDma_IntrDisable(&dma, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DMA_TO_DEVICE);
+			XAxiDma_IntrDisable(&dma, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DEVICE_TO_DMA);
+
+			/* Enable all interrupts */
+			XAxiDma_IntrEnable(&dma, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DMA_TO_DEVICE);
+			XAxiDma_IntrEnable(&dma, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DEVICE_TO_DMA);
+
+			/* Initialize flags before start transfer test  */
+			TxDone = 0;
+			RxDone = 0;
+			Error = 0;
+
+			return XST_SUCCESS;
+		#else
+			xil_printf("Interrupts are not available. Cannot initiate in interrupt mode.  \r\n");
 			return XST_FAILURE;
-		}
-		Status = XAxiDma_CfgInitialize(&dma, CfgPtr);
-
-		if (Status != XST_SUCCESS)
-		{
-			xil_printf("Initialization failed %d\r\n", Status);
-			return XST_FAILURE;
-		}
-
-		if(XAxiDma_HasSg(&dma))
-		{
-			xil_printf("Device configured as SG mode \r\n");
-			return XST_FAILURE;
-		}
-
-		/* Set up Interrupt system  */
-		Status = SetupIntrSystem(&Intc, &dma, TX_INTR_ID, RX_INTR_ID);
-		if (Status != XST_SUCCESS) {
-
-			xil_printf("Failed intr setup\r\n");
-			return XST_FAILURE;
-		}
-
-		/* Disable all interrupts before setup */
-
-		XAxiDma_IntrDisable(&dma, XAXIDMA_IRQ_ALL_MASK,
-							XAXIDMA_DMA_TO_DEVICE);
-
-		XAxiDma_IntrDisable(&dma, XAXIDMA_IRQ_ALL_MASK,
-							XAXIDMA_DEVICE_TO_DMA);
-
-		/* Enable all interrupts */
-		XAxiDma_IntrEnable(&dma, XAXIDMA_IRQ_ALL_MASK,
-								XAXIDMA_DMA_TO_DEVICE);
-
-
-		XAxiDma_IntrEnable(&dma, XAXIDMA_IRQ_ALL_MASK,
-								XAXIDMA_DEVICE_TO_DMA);
-
-		/* Initialize flags before start transfer test  */
-		TxDone = 0;
-		RxDone = 0;
-		Error = 0;
-
-		return XST_SUCCESS;
+		#endif
 	}
 
 	int from_mem(auto data_out_ptr, long length)
@@ -300,17 +369,13 @@ public:
 			xil_printf("%d : Started Transfer\r\n", i);
 			XTime_GetTime(&start_transfer);
 
-			while (!TxDone && !RxDone && !Error) {
-					/* NOP */
-			}
+			// Wait for All done or Error
+			while (!TxDone && !RxDone && !Error) {}
 
-			if (Error) {
-				xil_printf("Failed test transmit%s done, "
-				"receive%s done\r\n", TxDone? "":" not",
-								RxDone? "":" not");
-
+			if (Error)
+			{
+				xil_printf("Failed test transmit%s done, receive%s done\r\n", TxDone? "":" not", RxDone? "":" not");
 				return XST_FAILURE;
-
 			}
 
 			XTime_GetTime(&end_transfer);
@@ -349,238 +414,108 @@ public:
 
 };
 
+#if defined XPAR_SCUGIC_SINGLE_DEVICE_ID || XPAR_INTC_0_DEVICE_ID
+	static void TxIntrHandler(void *Callback)
+	{
+		u32 IrqStatus;
+		int TimeOut;
+		XAxiDma *AxiDmaInst = (XAxiDma *)Callback;
 
-static void TxIntrHandler(void *Callback)
-{
+		/* Read pending interrupts */
+		IrqStatus = XAxiDma_IntrGetIrq(AxiDmaInst, XAXIDMA_DMA_TO_DEVICE);
 
-	u32 IrqStatus;
-	int TimeOut;
-	XAxiDma *AxiDmaInst = (XAxiDma *)Callback;
-
-	/* Read pending interrupts */
-	IrqStatus = XAxiDma_IntrGetIrq(AxiDmaInst, XAXIDMA_DMA_TO_DEVICE);
-
-	/* Acknowledge pending interrupts */
-
-
-	XAxiDma_IntrAckIrq(AxiDmaInst, IrqStatus, XAXIDMA_DMA_TO_DEVICE);
-
-	/*
-	 * If no interrupt is asserted, we do not do anything
-	 */
-	if (!(IrqStatus & XAXIDMA_IRQ_ALL_MASK)) {
-
-		return;
-	}
-
-	/*
-	 * If error interrupt is asserted, raise error flag, reset the
-	 * hardware to recover from the error, and return with no further
-	 * processing.
-	 */
-	if ((IrqStatus & XAXIDMA_IRQ_ERROR_MASK)) {
-
-		Error = 1;
+		/* Acknowledge pending interrupts */
+		XAxiDma_IntrAckIrq(AxiDmaInst, IrqStatus, XAXIDMA_DMA_TO_DEVICE);
 
 		/*
-		 * Reset should never fail for transmit channel
+		 * If no interrupt is asserted, we do not do anything
 		 */
-		XAxiDma_Reset(AxiDmaInst);
+		if (!(IrqStatus & XAXIDMA_IRQ_ALL_MASK))
+			return;
 
-		TimeOut = RESET_TIMEOUT_COUNTER;
+		/*
+		 * If error interrupt is asserted, raise error flag, reset the
+		 * hardware to recover from the error, and return with no further
+		 * processing.
+		 */
+		if ((IrqStatus & XAXIDMA_IRQ_ERROR_MASK)) {
 
-		while (TimeOut) {
-			if (XAxiDma_ResetIsDone(AxiDmaInst)) {
-				break;
+			Error = 1;
+
+			/*
+			 * Reset should never fail for transmit channel
+			 */
+			XAxiDma_Reset(AxiDmaInst);
+
+			TimeOut = RESET_TIMEOUT_COUNTER;
+
+			while (TimeOut)
+			{
+				if (XAxiDma_ResetIsDone(AxiDmaInst))
+					break;
+				TimeOut -= 1;
 			}
 
-			TimeOut -= 1;
+			return;
 		}
 
-		return;
-	}
-
-	/*
-	 * If Completion interrupt is asserted, then set the TxDone flag
-	 */
-	if ((IrqStatus & XAXIDMA_IRQ_IOC_MASK)) {
-
-		TxDone = 1;
-	}
-}
-
-
-static void RxIntrHandler(void *Callback)
-{
-	u32 IrqStatus;
-	int TimeOut;
-	XAxiDma *AxiDmaInst = (XAxiDma *)Callback;
-
-	/* Read pending interrupts */
-	IrqStatus = XAxiDma_IntrGetIrq(AxiDmaInst, XAXIDMA_DEVICE_TO_DMA);
-
-	/* Acknowledge pending interrupts */
-	XAxiDma_IntrAckIrq(AxiDmaInst, IrqStatus, XAXIDMA_DEVICE_TO_DMA);
-
-	/*
-	 * If no interrupt is asserted, we do not do anything
-	 */
-	if (!(IrqStatus & XAXIDMA_IRQ_ALL_MASK)) {
-		return;
-	}
-
-	/*
-	 * If error interrupt is asserted, raise error flag, reset the
-	 * hardware to recover from the error, and return with no further
-	 * processing.
-	 */
-	if ((IrqStatus & XAXIDMA_IRQ_ERROR_MASK)) {
-
-		Error = 1;
-
-		/* Reset could fail and hang
-		 * NEED a way to handle this or do not call it??
+		/*
+		 * If Completion interrupt is asserted, then set the TxDone flag
 		 */
-		XAxiDma_Reset(AxiDmaInst);
+		if ((IrqStatus & XAXIDMA_IRQ_IOC_MASK))
+			TxDone = 1;
+	}
 
-		TimeOut = RESET_TIMEOUT_COUNTER;
+	static void RxIntrHandler(void *Callback)
+	{
+		u32 IrqStatus;
+		int TimeOut;
+		XAxiDma *AxiDmaInst = (XAxiDma *)Callback;
 
-		while (TimeOut) {
-			if(XAxiDma_ResetIsDone(AxiDmaInst)) {
-				break;
+		/* Read pending interrupts */
+		IrqStatus = XAxiDma_IntrGetIrq(AxiDmaInst, XAXIDMA_DEVICE_TO_DMA);
+
+		/* Acknowledge pending interrupts */
+		XAxiDma_IntrAckIrq(AxiDmaInst, IrqStatus, XAXIDMA_DEVICE_TO_DMA);
+
+		/*
+		 * If no interrupt is asserted, we do not do anything
+		 */
+		if (!(IrqStatus & XAXIDMA_IRQ_ALL_MASK))
+			return;
+
+		/*
+		 * If error interrupt is asserted, raise error flag, reset the
+		 * hardware to recover from the error, and return with no further
+		 * processing.
+		 */
+		if ((IrqStatus & XAXIDMA_IRQ_ERROR_MASK)) {
+
+			Error = 1;
+
+			/* Reset could fail and hang
+			 * NEED a way to handle this or do not call it??
+			 */
+			XAxiDma_Reset(AxiDmaInst);
+
+			TimeOut = RESET_TIMEOUT_COUNTER;
+
+			while (TimeOut)
+			{
+				if(XAxiDma_ResetIsDone(AxiDmaInst))
+					break;
+				TimeOut -= 1;
 			}
-
-			TimeOut -= 1;
+			return;
 		}
 
-		return;
+		/*
+		 * If completion interrupt is asserted, then set RxDone flag
+		 */
+		if (IrqStatus & XAXIDMA_IRQ_IOC_MASK)
+			RxDone = 1;
 	}
-
-	/*
-	 * If completion interrupt is asserted, then set RxDone flag
-	 */
-	if ((IrqStatus & XAXIDMA_IRQ_IOC_MASK)) {
-
-		RxDone = 1;
-	}
-}
-
-
-static int SetupIntrSystem(INTC * IntcInstancePtr,
-			   XAxiDma * AxiDmaPtr, u16 TxIntrId, u16 RxIntrId)
-{
-	int Status;
-
-#ifdef XPAR_INTC_0_DEVICE_ID
-
-	/* Initialize the interrupt controller and connect the ISRs */
-	Status = XIntc_Initialize(IntcInstancePtr, INTC_DEVICE_ID);
-	if (Status != XST_SUCCESS) {
-
-		xil_printf("Failed init intc\r\n");
-		return XST_FAILURE;
-	}
-
-	Status = XIntc_Connect(IntcInstancePtr, TxIntrId,
-			       (XInterruptHandler) TxIntrHandler, AxiDmaPtr);
-	if (Status != XST_SUCCESS) {
-
-		xil_printf("Failed tx connect intc\r\n");
-		return XST_FAILURE;
-	}
-
-	Status = XIntc_Connect(IntcInstancePtr, RxIntrId,
-			       (XInterruptHandler) RxIntrHandler, AxiDmaPtr);
-	if (Status != XST_SUCCESS) {
-
-		xil_printf("Failed rx connect intc\r\n");
-		return XST_FAILURE;
-	}
-
-	/* Start the interrupt controller */
-	Status = XIntc_Start(IntcInstancePtr, XIN_REAL_MODE);
-	if (Status != XST_SUCCESS) {
-
-		xil_printf("Failed to start intc\r\n");
-		return XST_FAILURE;
-	}
-
-	XIntc_Enable(IntcInstancePtr, TxIntrId);
-	XIntc_Enable(IntcInstancePtr, RxIntrId);
-
-#else
-
-	XScuGic_Config *IntcConfig;
-
-
-	/*
-	 * Initialize the interrupt controller driver so that it is ready to
-	 * use.
-	 */
-	IntcConfig = XScuGic_LookupConfig(INTC_DEVICE_ID);
-	if (NULL == IntcConfig) {
-		return XST_FAILURE;
-	}
-
-	Status = XScuGic_CfgInitialize(IntcInstancePtr, IntcConfig,
-					IntcConfig->CpuBaseAddress);
-	if (Status != XST_SUCCESS) {
-		return XST_FAILURE;
-	}
-
-
-	XScuGic_SetPriorityTriggerType(IntcInstancePtr, TxIntrId, 0xA0, 0x3);
-
-	XScuGic_SetPriorityTriggerType(IntcInstancePtr, RxIntrId, 0xA0, 0x3);
-	/*
-	 * Connect the device driver handler that will be called when an
-	 * interrupt for the device occurs, the handler defined above performs
-	 * the specific interrupt processing for the device.
-	 */
-	Status = XScuGic_Connect(IntcInstancePtr, TxIntrId,
-				(Xil_InterruptHandler)TxIntrHandler,
-				AxiDmaPtr);
-	if (Status != XST_SUCCESS) {
-		return Status;
-	}
-
-	Status = XScuGic_Connect(IntcInstancePtr, RxIntrId,
-				(Xil_InterruptHandler)RxIntrHandler,
-				AxiDmaPtr);
-	if (Status != XST_SUCCESS) {
-		return Status;
-	}
-
-	XScuGic_Enable(IntcInstancePtr, TxIntrId);
-	XScuGic_Enable(IntcInstancePtr, RxIntrId);
-
-
 #endif
-
-	/* Enable interrupts from the hardware */
-
-	Xil_ExceptionInit();
-	Xil_ExceptionRegisterHandler(XIL_EXCEPTION_ID_INT,
-			(Xil_ExceptionHandler)INTC_HANDLER,
-			(void *)IntcInstancePtr);
-
-	Xil_ExceptionEnable();
-
-	return XST_SUCCESS;
-}
-
-static void DisableIntrSystem(INTC * IntcInstancePtr,
-					u16 TxIntrId, u16 RxIntrId)
-{
-#ifdef XPAR_INTC_0_DEVICE_ID
-	/* Disconnect the interrupts for the DMA TX and RX channels */
-	XIntc_Disconnect(IntcInstancePtr, TxIntrId);
-	XIntc_Disconnect(IntcInstancePtr, RxIntrId);
-#else
-	XScuGic_Disconnect(IntcInstancePtr, TxIntrId);
-	XScuGic_Disconnect(IntcInstancePtr, RxIntrId);
-#endif
-}
 
 
 #endif /* SRC_MY_DMA_H_ */
