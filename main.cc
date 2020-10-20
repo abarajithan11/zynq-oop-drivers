@@ -43,7 +43,7 @@
 #define RX_BUFFER_BASE		0x05000000
 #define RX_BUFFER_HIGH		0x3FFFFFFF
 
-#define MAX_PKT_LEN		67108863
+#define MAX_PKT_LEN		100//67108863
 
 #define TEST_START_VALUE	0xC
 
@@ -61,16 +61,17 @@ int main()
 	xil_printf("\r\n--- Entering main() --- \r\n");
 
 	My_DMA dma(DMA_DEV_ID);
-	dma.poll_init();
+	Status = dma.intr_init();
+	if (Status != XST_SUCCESS) xil_printf("Init failed with code: %d\r\n", Status);
 
-	Status = dma.poll_test(TX_BUFFER_BASE, RX_BUFFER_BASE, MAX_PKT_LEN, NUMBER_OF_TRANSFERS);
+	Status = dma.intr_test(TX_BUFFER_BASE, RX_BUFFER_BASE, MAX_PKT_LEN, NUMBER_OF_TRANSFERS);
 
 	if (Status != XST_SUCCESS)
 	{
-		xil_printf("XAxiDma_SimplePoll Example Failed\r\n");
+		xil_printf("Failed\r\n");
 		return XST_FAILURE;
 	}
-	xil_printf("Successfully ran XAxiDma_SimplePoll Example\r\n");
+	xil_printf("Successfully ran  Example\r\n");
 	xil_printf("--- Exiting main() --- \r\n");
 	return XST_SUCCESS;
 
