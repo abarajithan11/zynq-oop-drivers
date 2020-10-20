@@ -13,6 +13,7 @@
 #include "xil_printf.h"
 #include "xstatus.h"
 #include <machine/_default_types.h>
+#include "xtime_l.h"
 
 #include "xaxidma.h"
 #include "test_data.h"
@@ -86,8 +87,25 @@ public:
 
 	int poll_test(auto data_in_ptr, auto data_out_ptr, long length, int num_transfers)
 	{
+		/* DMA successfully pulls 2^26-1 bytes = 64 MB
+		 * 26 = maximum register size
+		 *
+		 	#define TX_BUFFER_BASE		0x01000000  // = XPAR_PS7_DDR_0_S_AXI_BASEADDR
+			#define RX_BUFFER_BASE		0x05000000  // = TX_BUFFER_BASE + (2^26)
+			#define RX_BUFFER_HIGH		0x3FFFFFFF  // = XPAR_PS7_DDR_0_S_AXI_HIGHADDR
+
+			#define MAX_PKT_LEN		    67108863    // = 2^26-1
+			#define TEST_START_VALUE	0xC
+			#define NUMBER_OF_TRANSFERS	10
+		 *
+		 **/
 		Test_Data test_data ((u8 *)data_in_ptr, (u8 *)data_out_ptr, 0, length);
 
+		XTime start_loop, end_loop, start_transfer, end_transfer;
+		XTime sum_transfer_clocks = 0;
+		XTime loop_transfer_time = 0;
+
+		XTime_GetTime(&start_loop);
 		for(int i = 0; i < num_transfers; i ++)
 		{
 
@@ -105,7 +123,14 @@ public:
 				return XST_FAILURE;
 			}
 
+			xil_printf("%d : Started Transfer\r\n", i);
+			XTime_GetTime(&start_transfer);
+
 			this->poll_wait(true,true);
+
+			XTime_GetTime(&end_transfer);
+			sum_transfer_clocks += (end_transfer-start_transfer);
+			xil_printf("%d : Finished Transfer\r\n", i);
 
 			Status = test_data.check();
 			if (Status != XST_SUCCESS)
@@ -114,7 +139,26 @@ public:
 				return XST_FAILURE;
 			}
 
+			xil_printf("%d : Validated Transfer\r\n\n", i);
+
 		}
+		XTime_GetTime(&end_loop);
+
+		loop_transfer_time = (end_loop-start_loop)/COUNTS_PER_SECOND;
+		u64 bandwidth = length * num_transfers * COUNTS_PER_SECOND /(end_loop-start_loop);
+
+		xil_printf("Time for %d setups and transfers: %d seconds\r\n",num_transfers, loop_transfer_time);
+		xil_printf("Avg time for each setup and transfer: %d seconds\r\n", loop_transfer_time/num_transfers);
+		xil_printf("Avg bandwidth (incl setup): %d bytes/sec\r\n\n", bandwidth);
+
+		long sum_transfer_time = sum_transfer_clocks/COUNTS_PER_SECOND;
+		bandwidth = length * num_transfers * COUNTS_PER_SECOND /sum_transfer_clocks;
+
+		xil_printf("Time for %d transfers: %d seconds\r\n",num_transfers, sum_transfer_time);
+		xil_printf("Avg time for each transfer: %d seconds\r\n", sum_transfer_time/num_transfers);
+		xil_printf("Avg bandwidth (transfer only): %d bytes/sec\r\n\n", bandwidth);
+
+
 		return XST_SUCCESS;
 	}
 

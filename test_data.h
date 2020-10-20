@@ -17,7 +17,7 @@ class Test_Data
 {
 
 private:
-	long value;
+	char value;
 public:
 	__uint8_t *data_in_ptr;
 	__uint8_t *data_out_ptr;
@@ -37,7 +37,7 @@ public:
 	{
 		value = start_value;
 
-		for(int i = 0; i < length; i ++)
+		for(long i = 0; i < length; i ++)
 		{
 				data_in_ptr[i] = value;
 				value += 1;
@@ -53,7 +53,7 @@ public:
 		#endif
 
 		value = start_value;
-		for(int i = 0; i < length; i++)
+		for(long i = 0; i < length; i++)
 		{
 			if (data_out_ptr[i] != value)
 			{
