@@ -8,40 +8,40 @@
 extern void xil_printf(const char *format, ...);
 #endif
 
-#define DMA_DEV_ID			XPAR_AXIDMA_0_DEVICE_ID
-#define TX_BUFFER_BASE		0x01000000
-#define RX_BUFFER_BASE		0x05000000
-#define RX_BUFFER_HIGH		0x3FFFFFFF
-#define MAX_PKT_LEN			67108863
-#define TEST_START_VALUE	0xC
+#define DMA_DEV_ID				XPAR_AXIDMA_0_DEVICE_ID
+#define FROM_DDR_BUFFER_BASE	0x01000000
+#define TO_DDR_BUFFER_BASE		0x05000000
+#define TO_DDR_BUFFER_HIGH		0x3FFFFFFF
+#define MAX_PKT_LEN				67108863
+#define TEST_START_VALUE		0xC
 
 #define NUMBER_OF_TRANSFERS	10
 
-void tx_done_callback(My_DMA* dma)
+void from_ddr_done_callback(My_DMA* dma)
 {
-	xil_printf("TX callback, custom function \r\n");
+	xil_printf("from_ddr_done callback, custom function \r\n");
 }
 
-void rx_done_callback(My_DMA* dma)
+void to_ddr_done_callback(My_DMA* dma)
 {
-	xil_printf("RX callback, custom function \r\n");
+	xil_printf("to_ddr_done callback, custom function \r\n");
 }
 
 int main()
 {
-	int Status;
+	int status;
 	xil_printf("\r\n--- Entering main() --- \r\n");
 
 	My_DMA dma(DMA_DEV_ID);
-	Status = dma.intr_init(TX_INTR_ID, RX_INTR_ID);
-	if (Status != XST_SUCCESS) xil_printf("Init failed with code: %d\r\n", Status);
+	status = dma.intr_init(FROM_DDR_INTR_ID, TO_DDR_INTR_ID);
+	if (status != XST_SUCCESS) xil_printf("Init failed with code: %d\r\n", status);
 
 	// Attach custom callbacks
-	dma.tx_done_callback = tx_done_callback;
-	dma.rx_done_callback = rx_done_callback;
+	dma.from_ddr_done_callback = from_ddr_done_callback;
+	dma.to_ddr_done_callback = to_ddr_done_callback;
 
-	Status = dma.intr_test(TX_BUFFER_BASE, RX_BUFFER_BASE, MAX_PKT_LEN, NUMBER_OF_TRANSFERS);
-	if (Status != XST_SUCCESS)
+	status = dma.intr_test(FROM_DDR_BUFFER_BASE, TO_DDR_BUFFER_BASE, MAX_PKT_LEN, NUMBER_OF_TRANSFERS);
+	if (status != XST_SUCCESS)
 	{
 		xil_printf("Failed\r\n");
 		return XST_FAILURE;

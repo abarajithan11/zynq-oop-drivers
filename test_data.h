@@ -19,19 +19,19 @@ class Test_Data
 private:
 	char value;
 public:
-	__uint8_t *data_in_ptr;
-	__uint8_t *data_out_ptr;
+	__uint8_t *from_ddr_ptr;
+	__uint8_t *to_ddr_ptr;
 	char start_value;
 	long length;
 
 	// Constructor fills the test data
-	Test_Data(	auto * data_in_ptr,
-				auto * data_out_ptr,
+	Test_Data(	auto * from_ddr_ptr,
+				auto * to_ddr_ptr,
 				char start_value,
 				long length
 			 ):
-				data_in_ptr((__uint8_t*)data_in_ptr),
-				data_out_ptr((__uint8_t*)data_out_ptr),
+				from_ddr_ptr((__uint8_t*)from_ddr_ptr),
+				to_ddr_ptr((__uint8_t*)to_ddr_ptr),
 				start_value(start_value),
 				length(length)
 	{
@@ -39,7 +39,7 @@ public:
 
 		for(long i = 0; i < length; i ++)
 		{
-				data_in_ptr[i] = value;
+				from_ddr_ptr[i] = value;
 				value += 1;
 		}
 	}
@@ -49,15 +49,15 @@ public:
 
 		// Invalidate cache
 		#ifndef __aarch64__
-			Xil_DCacheInvalidateRange((UINTPTR)data_out_ptr, length);
+			Xil_DCacheInvalidateRange((UINTPTR)to_ddr_ptr, length);
 		#endif
 
 		value = start_value;
 		for(long i = 0; i < length; i++)
 		{
-			if (data_out_ptr[i] != value)
+			if (to_ddr_ptr[i] != value)
 			{
-				xil_printf("Data error %d: %x/%x\r\n", i, (unsigned int)data_out_ptr[i], (unsigned int)value);
+				xil_printf("Data error %d: %x/%x\r\n", i, (unsigned int)to_ddr_ptr[i], (unsigned int)value);
 				return XST_FAILURE;
 			}
 			value += 1;
