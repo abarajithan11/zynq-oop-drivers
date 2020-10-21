@@ -16,7 +16,7 @@
 #include "xtime_l.h"
 
 #include "xaxidma.h"
-#include "test_data.h"
+#include "my_test_data.h"
 
 
 #if defined XPAR_SCUGIC_SINGLE_DEVICE_ID || XPAR_INTC_0_DEVICE_ID

@@ -1,7 +1,7 @@
 
 #include "xparameters.h"
 #include "xdebug.h"
-#include "test_data.h"
+#include "my_test_data.h"
 #include "my_dma.h"
 
 #if (!defined(DEBUG))
