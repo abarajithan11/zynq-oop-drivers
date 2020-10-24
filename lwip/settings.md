@@ -21,9 +21,7 @@ Gateway: 192.168.1.1
 
 ## RTOS BSP Settings
 
-Change [these]() BSP settings
-
-https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/21430395/Zynq-7000+AP+SoC+Performance+Gigabit+Ethernet+achieving+the+best+performance
+Change [these](https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/21430395/Zynq-7000+AP+SoC+Performance+Gigabit+Ethernet+achieving+the+best+performance) BSP settings
 
 ## Jumbo frame
 
