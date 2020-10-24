@@ -46,7 +46,6 @@ public:
 
 	int check()
 	{
-
 		// Invalidate cache
 		#ifndef __aarch64__
 			Xil_DCacheInvalidateRange((UINTPTR)to_ddr_ptr, length);
@@ -57,13 +56,23 @@ public:
 		{
 			if (to_ddr_ptr[i] != value)
 			{
-				xil_printf("Data error %d: %x/%x\r\n", i, (unsigned int)to_ddr_ptr[i], (unsigned int)value);
+				xil_printf("Data error at %x, %d != %d \r\n", i, (unsigned int)from_ddr_ptr[i], (unsigned int)to_ddr_ptr[i]);
 				return XST_FAILURE;
 			}
 			value += 1;
 		}
 
 		return XST_SUCCESS;
+	}
+
+	void print_out()
+	{
+		#ifndef __aarch64__
+			Xil_DCacheInvalidateRange((UINTPTR)to_ddr_ptr, length);
+		#endif
+			xil_printf("Data out at address: %p, legnth: %d \r\n", from_ddr_ptr, length);
+			for(long i = 0; i < length; i++)
+				xil_printf("%d \r\n", (unsigned int)to_ddr_ptr[i]);
 	}
 };
 

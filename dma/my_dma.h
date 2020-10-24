@@ -67,20 +67,20 @@ public:
 		CfgPtr = XAxiDma_LookupConfig(device_id);
 		if (!CfgPtr)
 		{
-			xil_printf("No config found for %d\r\n", device_id);
+			xil_printf("poll_init failed. No config found for %d\r\n", device_id);
 			return XST_FAILURE;
 		}
 
 		status = XAxiDma_CfgInitialize(&dma, CfgPtr);
 		if (status != XST_SUCCESS)
 		{
-			xil_printf("Initialization failed %d\r\n", status);
+			xil_printf("poll_init failed. XAxiDma_CfgInitialize failed with code: %d\r\n", status);
 			return XST_FAILURE;
 		}
 
 		if(XAxiDma_HasSg(&dma))
 		{
-			xil_printf("Device configured as SG mode \r\n");
+			xil_printf("poll_init failed. Device configured as SG mode \r\n");
 			return XST_FAILURE;
 		}
 
@@ -101,7 +101,16 @@ public:
 		Xil_DCacheFlushRange((uintptr_t)s2mm_ptr, length);
 		s2mm_done = 0;
 		status = XAxiDma_SimpleTransfer(&dma, (uintptr_t) s2mm_ptr, length, XAXIDMA_DEVICE_TO_DMA);
-		return status;
+
+		if (status != XST_SUCCESS)
+		{
+			xil_printf("Failed to initiate s2mm with code: %d\r\n", status);
+			return XST_FAILURE;
+		}
+		else
+		{
+			return XST_SUCCESS;
+		}
 	}
 
 	int mm2s_start(auto mm2s_ptr, long length)
@@ -109,7 +118,16 @@ public:
 		Xil_DCacheFlushRange((uintptr_t)mm2s_ptr, length);
 		mm2s_done = 0;
 		status = XAxiDma_SimpleTransfer(&dma, (uintptr_t) mm2s_ptr, length, XAXIDMA_DMA_TO_DEVICE);
-		return status;
+
+		if (status != XST_SUCCESS)
+		{
+			xil_printf("Failed to initiate mm2s with code: %d\r\n", status);
+			return XST_FAILURE;
+		}
+		else
+		{
+			return XST_SUCCESS;
+		}
 	}
 
 	int is_busy(bool s2mm, bool mm2s)
@@ -158,18 +176,7 @@ public:
 		{
 
 			status = this->s2mm_start((UINTPTR) s2mm_ptr, length);
-			if (status != XST_SUCCESS)
-			{
-				xil_printf("Failed to initiate s2mm with code: %d\r\n", status);
-				return XST_FAILURE;
-			}
-
 			status = this->mm2s_start((UINTPTR) mm2s_ptr, length);
-			if (status != XST_SUCCESS)
-			{
-				xil_printf("Failed to initiate mm2s with code: %d\r\n", status);
-				return XST_FAILURE;
-			}
 
 			xil_printf("%d : Started Transfer\r\n", i);
 			XTime_GetTime(&start_transfer);
@@ -181,13 +188,11 @@ public:
 			xil_printf("%d : Finished Transfer\r\n", i);
 
 			status = test_data.check();
-			if (status != XST_SUCCESS)
-			{
-				xil_printf("Check data failed\r\n");
-				return XST_FAILURE;
-			}
 
-			xil_printf("%d : Validated Transfer\r\n\n", i);
+			if (status != XST_SUCCESS)
+				return XST_FAILURE;
+			else
+				xil_printf("%d : Validated Transfer\r\n\n", i);
 
 		}
 		XTime_GetTime(&end_loop);
@@ -217,20 +222,20 @@ public:
 			CfgPtr = XAxiDma_LookupConfig(device_id);
 			if (!CfgPtr)
 			{
-				xil_printf("No config found for %d\r\n", device_id);
+				xil_printf("intr_init failed. No config found for %d\r\n", device_id);
 				return XST_FAILURE;
 			}
 			status = XAxiDma_CfgInitialize(&dma, CfgPtr);
 
 			if (status != XST_SUCCESS)
 			{
-				xil_printf("Initialization failed %d\r\n", status);
+				xil_printf("intr_init failed. XAxiDma_CfgInitialize failed with code: %d\r\n", status);
 				return XST_FAILURE;
 			}
 
 			if(XAxiDma_HasSg(&dma))
 			{
-				xil_printf("Device configured as SG mode \r\n");
+				xil_printf("intr_init failed. Device configured as SG mode \r\n");
 				return XST_FAILURE;
 			}
 
@@ -241,20 +246,20 @@ public:
 				/* Initialize the interrupt controller and connect the ISRs */
 				status = XIntc_Initialize(&Intc, INTC_DEVICE_ID);
 				if (status != XST_SUCCESS) {
-					xil_printf("Failed init intc\r\n");
+					xil_printf("intr_init failed. XIntc_Initialize\r\n");
 					return XST_FAILURE;
 				}
 
 				status = XIntc_Connect(&Intc, MM2SIntrId,	(XInterruptHandler) MM2SIntrHandler, this);
 				if (status != XST_SUCCESS) {
-					xil_printf("Failed mm2s connect intc\r\n");
+					xil_printf("intr_init failed. XIntc_Connect. Failed mm2s connect intc\r\n");
 					return XST_FAILURE;
 				}
 
 				status = XIntc_Connect(&Intc, S2MMIntrId, (XInterruptHandler) S2MMIntrHandler, this);
 				if (status != XST_SUCCESS)
 				{
-					xil_printf("Failed s2mm connect intc\r\n");
+					xil_printf("intr_init failed. XIntc_Connect. Failed s2mm connect intc\r\n");
 					return XST_FAILURE;
 				}
 
@@ -262,7 +267,7 @@ public:
 				status = XIntc_Start(&Intc, XIN_REAL_MODE);
 				if (status != XST_SUCCESS)
 				{
-					xil_printf("Failed to start intc\r\n");
+					xil_printf("intr_init failed. XIntc_Start. Failed to start intc\r\n");
 					return XST_FAILURE;
 				}
 
@@ -316,7 +321,7 @@ public:
 
 			if (status != XST_SUCCESS)
 			{
-				xil_printf("Failed intr setup\r\n");
+				xil_printf("intr_init failed. \r\n");
 				return XST_FAILURE;
 			}
 
@@ -361,18 +366,7 @@ public:
 			{
 
 				status = this->s2mm_start((UINTPTR) s2mm_ptr, length);
-				if (status != XST_SUCCESS)
-				{
-					xil_printf("Failed to initiate s2mm with code: %d\r\n", status);
-					return XST_FAILURE;
-				}
-
 				status = this->mm2s_start((UINTPTR) mm2s_ptr, length);
-				if (status != XST_SUCCESS)
-				{
-					xil_printf("Failed to initiate mm2s with code: %d\r\n", status);
-					return XST_FAILURE;
-				}
 
 				xil_printf("%d : Started Transfer\r\n", i);
 				XTime_GetTime(&start_transfer);
