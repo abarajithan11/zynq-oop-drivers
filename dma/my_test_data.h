@@ -25,8 +25,8 @@ public:
 	long length;
 
 	// Constructor fills the test data
-	Test_Data(	auto * from_ddr_ptr,
-				auto * to_ddr_ptr,
+	Test_Data(	UINTPTR from_ddr_ptr,
+				UINTPTR to_ddr_ptr,
 				char start_value,
 				long length
 			 ):
@@ -39,7 +39,7 @@ public:
 
 		for(long i = 0; i < length; i ++)
 		{
-				from_ddr_ptr[i] = value;
+				((u8*)from_ddr_ptr)[i] = value;
 				value += 1;
 		}
 	}
