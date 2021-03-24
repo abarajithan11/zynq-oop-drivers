@@ -4,6 +4,8 @@
  *  Created on: Oct 20, 2020
  *      Author: abara
  */
+#pragma once
+
 #include "xparameters.h"
 #ifndef SRC_MY_DMA_H_
 #define SRC_MY_DMA_H_
@@ -44,6 +46,8 @@
 #endif
 
 
+void do_nothing(){}
+
 class My_DMA
 {
 public:
@@ -58,41 +62,47 @@ public:
 	volatile int mm2s_done, s2mm_done, error;
 
 	// These function pointers are to be assigned from outside
-	void (*mm2s_done_callback)(My_DMA*);
-	void (*s2mm_done_callback)(My_DMA*);
+	void (*mm2s_done_callback)() = do_nothing;
+	void (*s2mm_done_callback)() = do_nothing;
 
-	My_DMA(const char * name, uint16_t device_id): name(name), device_id(device_id){}
+	My_DMA(const char * name, uint16_t device_id): name(name), device_id(device_id)
+	{
+		/* Initialize DMA engine */
+		CfgPtr = XAxiDma_LookupConfig(device_id);
+		if (!CfgPtr)
+			xil_printf("dma(%s): constructor init failed. No config found for %d\r\n",name , device_id);
+
+		status = XAxiDma_CfgInitialize(&dma, CfgPtr);
+		if (status != XST_SUCCESS)
+			xil_printf("dma(%s): constructor init failed. XAxiDma_CfgInitialize failed with code: %d\r\n",name , status);
+
+		if(XAxiDma_HasSg(&dma))
+			xil_printf("dma(%s): constructor init failed. Device configured as SG mode \r\n",name );
+
+		/* INITIALIZE INTERRUPTS */
+#ifdef XPAR_INTC_0_DEVICE_ID
+		status = XIntc_Initialize(&Intc, INTC_DEVICE_ID);
+		if (status != XST_SUCCESS)
+			xil_printf("dma(%s): constructor intr init failed. XIntc_Initialize\r\n",name );
+#else
+		XScuGic_Config *IntcConfig;
+
+		IntcConfig = XScuGic_LookupConfig(INTC_DEVICE_ID);
+		if (NULL == IntcConfig)
+			xil_printf("dma(%s): constructor intr init failed. XScuGic_LookupConfig\r\n",name );
+
+		status = XScuGic_CfgInitialize(&Intc, IntcConfig, IntcConfig->CpuBaseAddress);
+		if (status != XST_SUCCESS)
+			xil_printf("dma(%s): constructor intr init failed. XScuGic_LookupConfig\r\n",name );
+#endif
+	}
 
 	int poll_init()
 	{
 		/* Initialize DMA in polling mode
 		 */
-		CfgPtr = XAxiDma_LookupConfig(device_id);
-		if (!CfgPtr)
-		{
-			xil_printf("dma(%s): poll_init failed. No config found for %d\r\n", name, device_id);
-			return XST_FAILURE;
-		}
-
-		status = XAxiDma_CfgInitialize(&dma, CfgPtr);
-		if (status != XST_SUCCESS)
-		{
-			xil_printf("dma(%s): poll_init failed. XAxiDma_CfgInitialize failed with code: %d\r\n", name, status);
-			return XST_FAILURE;
-		}
-
-		if(XAxiDma_HasSg(&dma))
-		{
-			xil_printf("dma(%s): poll_init failed. Device configured as SG mode \r\n", name);
-			return XST_FAILURE;
-		}
-
-		/* Disable interrupts, we use polling mode
-		 */
-		XAxiDma_IntrDisable(&dma, XAXIDMA_IRQ_ALL_MASK,
-							XAXIDMA_DEVICE_TO_DMA);
-		XAxiDma_IntrDisable(&dma, XAXIDMA_IRQ_ALL_MASK,
-							XAXIDMA_DMA_TO_DEVICE);
+		XAxiDma_IntrDisable(&dma, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DEVICE_TO_DMA);
+		XAxiDma_IntrDisable(&dma, XAXIDMA_IRQ_ALL_MASK,	XAXIDMA_DMA_TO_DEVICE);
 		mm2s_done = 0;
 		s2mm_done = 0;
 		error = 0;
@@ -122,7 +132,6 @@ public:
 
 	int mm2s_start(UINTPTR mm2s_ptr, long length)
 	{
-		Xil_DCacheFlushRange((uintptr_t)mm2s_ptr, length);
 		mm2s_done = 0;
 		status = XAxiDma_SimpleTransfer(&dma, (uintptr_t) mm2s_ptr, length, XAXIDMA_DMA_TO_DEVICE);
 
@@ -226,37 +235,10 @@ public:
 
 		int intr_init_mm2s(int MM2SIntrId)
 		{
-			/* Initialize DMA engine */
-			CfgPtr = XAxiDma_LookupConfig(device_id);
-			if (!CfgPtr)
-			{
-				xil_printf("dma(%s): intr_init_mm2s failed. No config found for %d\r\n",name , device_id);
-				return XST_FAILURE;
-			}
-			status = XAxiDma_CfgInitialize(&dma, CfgPtr);
-
-			if (status != XST_SUCCESS)
-			{
-				xil_printf("dma(%s): intr_init_mm2s failed. XAxiDma_CfgInitialize failed with code: %d\r\n",name , status);
-				return XST_FAILURE;
-			}
-
-			if(XAxiDma_HasSg(&dma))
-			{
-				xil_printf("dma(%s): intr_init_mm2s failed. Device configured as SG mode \r\n",name);
-				return XST_FAILURE;
-			}
 
 			/* Set up Interrupt system  */
 
 			#ifdef XPAR_INTC_0_DEVICE_ID
-
-				/* Initialize the interrupt controller and connect the ISRs */
-				status = XIntc_Initialize(&Intc, INTC_DEVICE_ID);
-				if (status != XST_SUCCESS) {
-					xil_printf("dma(%s): intr_init_mm2s failed. XIntc_Initialize\r\n",name );
-					return XST_FAILURE;
-				}
 
 				status = XIntc_Connect(&Intc, MM2SIntrId,	(XInterruptHandler) MM2SIntrHandler, this);
 				if (status != XST_SUCCESS) {
@@ -276,21 +258,6 @@ public:
 
 			#else
 
-				XScuGic_Config *IntcConfig;
-
-				/*
-				 * Initialize the interrupt controller driver so that it is ready to
-				 * use.
-				 */
-				IntcConfig = XScuGic_LookupConfig(INTC_DEVICE_ID);
-				if (NULL == IntcConfig)
-					return XST_FAILURE;
-
-				status = XScuGic_CfgInitialize(&Intc, IntcConfig,
-								IntcConfig->CpuBaseAddress);
-				if (status != XST_SUCCESS)
-					return XST_FAILURE;
-
 				XScuGic_SetPriorityTriggerType(&Intc, MM2SIntrId, 0xA0, 0x3);
 
 				/*
@@ -306,11 +273,11 @@ public:
 
 			#endif
 
-				/* Enable interrupts from the hardware */
+			/* Enable interrupts from the hardware */
 
-				Xil_ExceptionInit();
-				Xil_ExceptionRegisterHandler(XIL_EXCEPTION_ID_INT, (Xil_ExceptionHandler)INTC_HANDLER, (void *)&Intc);
-				Xil_ExceptionEnable();
+			Xil_ExceptionInit();
+			Xil_ExceptionRegisterHandler(XIL_EXCEPTION_ID_INT, (Xil_ExceptionHandler)INTC_HANDLER, (void *)&Intc);
+			Xil_ExceptionEnable();
 
 			if (status != XST_SUCCESS)
 			{
@@ -318,10 +285,8 @@ public:
 				return XST_FAILURE;
 			}
 
-			/* Disable all interrupts before setup */
+			/* Disable and enable */
 			XAxiDma_IntrDisable(&dma, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DMA_TO_DEVICE);
-
-			/* Enable all interrupts */
 			XAxiDma_IntrEnable(&dma, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DMA_TO_DEVICE);
 
 			/* Initialize flags before start transfer  */
@@ -333,37 +298,11 @@ public:
 
 		int intr_init_s2mm(int S2MMIntrId)
 		{
-			/* Initialize DMA engine */
-			CfgPtr = XAxiDma_LookupConfig(device_id);
-			if (!CfgPtr)
-			{
-				xil_printf("dma(%s): intr_init_s2mm failed. No config found for %d\r\n",name , device_id);
-				return XST_FAILURE;
-			}
-			status = XAxiDma_CfgInitialize(&dma, CfgPtr);
-
-			if (status != XST_SUCCESS)
-			{
-				xil_printf("dma(%s): intr_init_s2mm failed. XAxiDma_CfgInitialize failed with code: %d\r\n",name , status);
-				return XST_FAILURE;
-			}
-
-			if(XAxiDma_HasSg(&dma))
-			{
-				xil_printf("dma(%s): intr_init_s2mm failed. Device configured as SG mode \r\n",name );
-				return XST_FAILURE;
-			}
 
 			/* Set up Interrupt system  */
 
 			#ifdef XPAR_INTC_0_DEVICE_ID
 
-				/* Initialize the interrupt controller and connect the ISRs */
-				status = XIntc_Initialize(&Intc, INTC_DEVICE_ID);
-				if (status != XST_SUCCESS) {
-					xil_printf("dma(%s): intr_init_s2mm failed. XIntc_Initialize\r\n",name );
-					return XST_FAILURE;
-				}
 
 				status = XIntc_Connect(&Intc, S2MMIntrId, (XInterruptHandler) S2MMIntrHandler, this);
 				if (status != XST_SUCCESS)
@@ -384,21 +323,6 @@ public:
 
 			#else
 
-				XScuGic_Config *IntcConfig;
-
-				/*
-				 * Initialize the interrupt controller driver so that it is ready to
-				 * use.
-				 */
-				IntcConfig = XScuGic_LookupConfig(INTC_DEVICE_ID);
-				if (NULL == IntcConfig)
-					return XST_FAILURE;
-
-				status = XScuGic_CfgInitialize(&Intc, IntcConfig,
-								IntcConfig->CpuBaseAddress);
-				if (status != XST_SUCCESS)
-					return XST_FAILURE;
-
 				XScuGic_SetPriorityTriggerType(&Intc, S2MMIntrId, 0xA0, 0x3);
 				/*
 				 * Connect the device driver handler that will be called when an
@@ -414,11 +338,11 @@ public:
 
 			#endif
 
-				/* Enable interrupts from the hardware */
+			/* Enable interrupts from the hardware */
 
-				Xil_ExceptionInit();
-				Xil_ExceptionRegisterHandler(XIL_EXCEPTION_ID_INT, (Xil_ExceptionHandler)INTC_HANDLER, (void *)&Intc);
-				Xil_ExceptionEnable();
+			Xil_ExceptionInit();
+			Xil_ExceptionRegisterHandler(XIL_EXCEPTION_ID_INT, (Xil_ExceptionHandler)INTC_HANDLER, (void *)&Intc);
+			Xil_ExceptionEnable();
 
 			if (status != XST_SUCCESS)
 			{
@@ -426,10 +350,8 @@ public:
 				return XST_FAILURE;
 			}
 
-			/* Disable all interrupts before setup */
+			/* Disable and enable */
 			XAxiDma_IntrDisable(&dma, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DEVICE_TO_DMA);
-
-			/* Enable all interrupts */
 			XAxiDma_IntrEnable(&dma, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DEVICE_TO_DMA);
 
 			/* Initialize flags before start transfer  */
@@ -569,7 +491,7 @@ public:
 		 */
 		if ((IrqStatus & XAXIDMA_IRQ_IOC_MASK)){
 			my_dma_ptr->mm2s_done = 1;
-			my_dma_ptr->mm2s_done_callback(my_dma_ptr);
+			my_dma_ptr->mm2s_done_callback();
 		}
 	}
 
@@ -622,8 +544,7 @@ public:
 		 */
 		if (IrqStatus & XAXIDMA_IRQ_IOC_MASK){
 			my_dma_ptr->s2mm_done = 1;
-			Xil_DCacheFlushRange(my_dma_ptr->s2mm_buffer_base, my_dma_ptr->s2mm_buffer_length);
-			my_dma_ptr->s2mm_done_callback(my_dma_ptr);
+			my_dma_ptr->s2mm_done_callback();
 		}
 	}
 #endif
