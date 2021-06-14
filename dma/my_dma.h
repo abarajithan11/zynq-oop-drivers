@@ -7,8 +7,6 @@
 #pragma once
 
 #include "xparameters.h"
-#ifndef SRC_MY_DMA_H_
-#define SRC_MY_DMA_H_
 
 #include "xparameters.h"
 #include "xil_cache.h"
@@ -59,7 +57,7 @@ public:
 	UINTPTR s2mm_buffer_base;
 	UINTPTR s2mm_buffer_length;
 
-	volatile int mm2s_done, s2mm_done, error;
+	volatile bool mm2s_done=false, s2mm_done=false, error=false;
 
 	// These function pointers are to be assigned from outside
 	void (*mm2s_done_callback)() = do_nothing;
@@ -103,16 +101,16 @@ public:
 		 */
 		XAxiDma_IntrDisable(&dma, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DEVICE_TO_DMA);
 		XAxiDma_IntrDisable(&dma, XAXIDMA_IRQ_ALL_MASK,	XAXIDMA_DMA_TO_DEVICE);
-		mm2s_done = 0;
-		s2mm_done = 0;
-		error = 0;
+		mm2s_done = false;
+		s2mm_done = false;
+		error = false;
 		return XST_SUCCESS;
 	}
 
 	int s2mm_start(UINTPTR s2mm_ptr, long length)
 	{
 
-		s2mm_done = 0;
+		s2mm_done = false;
 		status = XAxiDma_SimpleTransfer(&dma, (uintptr_t) s2mm_ptr, length, XAXIDMA_DEVICE_TO_DMA);
 
 		// Store these to be used by the done_intr to to clear cache
@@ -132,7 +130,7 @@ public:
 
 	int mm2s_start(UINTPTR mm2s_ptr, long length)
 	{
-		mm2s_done = 0;
+		mm2s_done = false;
 		status = XAxiDma_SimpleTransfer(&dma, (uintptr_t) mm2s_ptr, length, XAXIDMA_DMA_TO_DEVICE);
 
 		if (status != XST_SUCCESS)
@@ -152,12 +150,12 @@ public:
 		if (s2mm)
 		{
 			s2mm_result = XAxiDma_Busy(&dma,XAXIDMA_DEVICE_TO_DMA);
-			if (!s2mm_result) s2mm_done = 1;
+			if (!s2mm_result) s2mm_done = true;
 		}
 		if (mm2s)
 		{
 			mm2s_result = XAxiDma_Busy(&dma,XAXIDMA_DMA_TO_DEVICE);
-			if (!mm2s_result) mm2s_done = 1;
+			if (!mm2s_result) mm2s_done = true;
 		}
 		return (s2mm && s2mm_result) || (mm2s && mm2s_result);
 	}
@@ -290,8 +288,8 @@ public:
 			XAxiDma_IntrEnable(&dma, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DMA_TO_DEVICE);
 
 			/* Initialize flags before start transfer  */
-			mm2s_done = 0;
-			error = 0;
+			mm2s_done = false;
+			error = false;
 
 			return XST_SUCCESS;
 		}
@@ -355,8 +353,8 @@ public:
 			XAxiDma_IntrEnable(&dma, XAXIDMA_IRQ_ALL_MASK, XAXIDMA_DEVICE_TO_DMA);
 
 			/* Initialize flags before start transfer  */
-			s2mm_done = 0;
-			error = 0;
+			s2mm_done = false;
+			error = false;
 
 			return XST_SUCCESS;
 		}
@@ -467,7 +465,7 @@ public:
 		 */
 		if ((IrqStatus & XAXIDMA_IRQ_ERROR_MASK)) {
 
-			my_dma_ptr->error = 1;
+			my_dma_ptr->error = true;
 
 			/*
 			 * Reset should never fail for transmit channel
@@ -490,7 +488,7 @@ public:
 		 * If Completion interrupt is asserted, then set the MM2SDone flag
 		 */
 		if ((IrqStatus & XAXIDMA_IRQ_IOC_MASK)){
-			my_dma_ptr->mm2s_done = 1;
+			my_dma_ptr->mm2s_done = true;
 			my_dma_ptr->mm2s_done_callback();
 		}
 	}
@@ -521,7 +519,7 @@ public:
 		 */
 		if ((IrqStatus & XAXIDMA_IRQ_ERROR_MASK)) {
 
-			my_dma_ptr->error = 1;
+			my_dma_ptr->error = true;
 
 			/* Reset could fail and hang
 			 * NEED a way to handle this or do not call it??
@@ -543,11 +541,10 @@ public:
 		 * If completion interrupt is asserted, then set S2MMDone flag
 		 */
 		if (IrqStatus & XAXIDMA_IRQ_IOC_MASK){
-			my_dma_ptr->s2mm_done = 1;
+			my_dma_ptr->s2mm_done = true;
 			my_dma_ptr->s2mm_done_callback();
 		}
 	}
 #endif
 
 
-#endif /* SRC_MY_DMA_H_ */
